@@ -1,4 +1,4 @@
-# microblog.el
+# microbe.el
 
 A high-performance, offline-first Emacs client for [Micro.blog](https://micro.blog).
 
