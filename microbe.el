@@ -444,5 +444,5 @@
       (tabulated-list-print t))
     (switch-to-buffer buf)))
 
-(provide 'microblog)
+(provide 'microbe)
 ;;; microbe.el ends here
