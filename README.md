@@ -70,3 +70,59 @@ When writing or editing a post, Emacs will present an email-style buffer with `T
 
 * `M-x microblog-sync-posts`: Force a manual download of your latest posts from the server.
 * `M-x microblog-reset-db`: Wipes the local SQLite database entirely. Use this if you want to perform a clean, fresh sync from the server.
+
+
+# inkling.el (Inkwell RSS Reader)
+
+An offline-first, keyboard-driven RSS client for Micro.blog's [Inkwell](https://micro.blog/feeds) service, built as a companion to `microbe.el`.
+
+Inkling uses Emacs 29's built-in SQLite to store your feeds locally, ensuring instant load times. It talks directly to Inkwell's Feedbin-compatible API via `curl` to flawlessly sync your unread counts, bookmarks, and subscriptions in the background.
+
+## Dependencies
+
+* **microbe.el**: Inkling requires `microbe.el` to be installed and configured. It securely reuses your Micro.blog App Token and relies on Microbe's composer engine for publishing.
+* **Emacs 29.1+** (for built-in SQLite).
+* **curl** (for robust API communication).
+
+## Installation
+
+Assuming you have already installed and configured `microbe.el`:
+
+1. Download `inkling.el` and place it in the same `load-path` directory.
+2. Add the following to your `init.el`:
+
+```elisp
+(require 'inkling)
+
+;; Map a global shortcut to open your RSS feeds
+(global-set-key (kbd "C-c i") 'inkling-list)
+```
+
+## Usage & Workflow
+
+Start the reader by running `M-x inkling-list` (or using your custom keybinding).
+
+If your list is empty, press **`g`** to perform an initial sync from the Inkwell server. Inkling pulls your entries, unread state, and bookmarked (starred) items into a local SQLite database.
+
+### The List View (`*Inkling Headers*`)
+
+Posts are displayed in a clean, tabulated list. Unread posts are marked with a bullet (`•`) and bookmarked posts are marked with a star (`★`). You can click the "Date" header to sort chronologically down to the exact second.
+
+* `RET` - **Read**: Open the post in a reading pane and mark it as read on the server.
+* `u` - **Toggle Unread**: Filter the list to show *only* unread items, or expand to show all items.
+* `g` - **Sync/Refresh**: Download the latest feeds and unread states from Micro.blog.
+* `j` / `k` - **Next / Previous**: Move your selection up or down the list. 
+
+### The Reading View
+
+When reading a post, Inkling renders the HTML cleanly using Emacs's built-in `shr` engine. 
+
+You do not need to switch back to the list window to navigate. The following keys work seamlessly whether your cursor is in the List View or the Reading View:
+
+* `j` / `k` - **Next / Previous Post**: Instantly close the current post, move down/up the list, and open the next post. Perfect for rapidly clearing out your unread queue.
+* `r` - **Toggle Read Status**: Instantly mark a post as read/unread locally and sync the state to the server in the background.
+* `b` - **Toggle Bookmark**: Add or remove a star (`★`). Bookmarks are synced directly to your Micro.blog account.
+* `o` - **Open in Browser**: Launch the original post URL in your system's default web browser.
+* `w` - **Copy URL**: Push the post's live URL directly to your system clipboard.
+* `c` - **Quote & Blog**: Highlight any text in the reading view and press `c`. Inkling will instantly open a 3-pane layout with the `microbe.el` composer, perfectly formatting your highlighted text as a Markdown blockquote and appending the source link.
+* `q` - **Quit**: Close the reading window.
