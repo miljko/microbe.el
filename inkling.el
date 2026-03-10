@@ -11,6 +11,9 @@
 
 (defvar inkling-db-file (expand-file-name "inkling.sqlite" user-emacs-directory)
   "Path to the local Inkling database.")
+(defvar inkling-max-sync-pages 2
+  "Maximum number of pages to fetch during a sync. (Approx 100-200 items per page).")
+
 
 (defvar-local inkling-current-id nil "Tracks the API ID of the post being read.")
 (defvar-local inkling-current-url nil "Tracks the URL of the post being read.")
@@ -48,49 +51,56 @@
 ;; =====================================================================
 
 (defun inkling-sync-feeds ()
-  "Download entries, unread state, and starred state from Inkwell."
+  "Download entries (paginated), unread state, and starred state from Inkwell."
   (interactive)
   (inkling-init-db)
-  (let* ((token (microblog-get-token))
+  (let* ((token (microblog-get-token)) ;; (Or microbe-get-token if renamed)
          (db (sqlite-open inkling-db-file))
-         (entries-buf (generate-new-buffer "*inkling-entries*"))
          (unread-buf (generate-new-buffer "*inkling-unread*"))
          (starred-buf (generate-new-buffer "*inkling-starred*"))
-         (total-count 0))
+         (total-count 0)
+         (page 1)
+         (fetching-entries t))
     
-    (message "Syncing Inkwell feeds...")
-    
-    ;; 1. Fetch Data
-    (call-process "curl" nil entries-buf nil "-s" "-H" (concat "Authorization: Bearer " token) 
-                  "https://micro.blog/feeds/v2/entries.json?mode=extended")
-    (call-process "curl" nil unread-buf nil "-s" "-H" (concat "Authorization: Bearer " token) 
-                  "https://micro.blog/feeds/v2/unread_entries.json")
-    (call-process "curl" nil starred-buf nil "-s" "-H" (concat "Authorization: Bearer " token) 
-                  "https://micro.blog/feeds/v2/starred_entries.json")
+    (message "Syncing Inkwell feeds (this may take a moment)...")
     
     (sqlite-execute db "BEGIN TRANSACTION")
     
-    ;; 2. Parse & Insert Entries
-    (with-current-buffer entries-buf
-      (goto-char (point-min))
-      (let* ((json-object-type 'alist)
-             (json-array-type 'list)
-             (json-key-type 'symbol)
-             (items (condition-case nil (json-read) (error nil))))
-        (when items
-          (dolist (item items)
-            (let* ((id (alist-get 'id item))
-                   (url (alist-get 'url item))
-                   (title (alist-get 'title item))
-                   (content (alist-get 'content item))
-                   (date (alist-get 'published item))
-                   (author (alist-get 'author item)))
-              ;; Insert everything as un-starred and read by default
-              (sqlite-execute db "INSERT OR REPLACE INTO feeds (id, date_published, content, url, title, author, is_read, is_starred) VALUES (?, ?, ?, ?, ?, ?, 1, 0)"
-                              (list (format "%s" id) date content url title author))
-              (setq total-count (1+ total-count)))))))
+    ;; 1. Fetch Entries with Pagination
+    (while (and fetching-entries (<= page inkling-max-sync-pages))
+      (let ((entries-buf (generate-new-buffer "*inkling-entries*")))
+        (message "Fetching page %d..." page)
+        (call-process "curl" nil entries-buf nil "-s" "-H" (concat "Authorization: Bearer " token) 
+                      (format "https://micro.blog/feeds/v2/entries.json?mode=extended&page=%d" page))
+        
+        (with-current-buffer entries-buf
+          (goto-char (point-min))
+          (let* ((json-object-type 'alist)
+                 (json-array-type 'list)
+                 (json-key-type 'symbol)
+                 (items (condition-case nil (json-read) (error nil))))
+            
+            ;; If the API returns an empty list, we've reached the end of the history
+            (if (or (null items) (zerop (length items)))
+                (setq fetching-entries nil)
+              
+              (dolist (item items)
+                (let* ((id (alist-get 'id item))
+                       (url (alist-get 'url item))
+                       (title (alist-get 'title item))
+                       (content (alist-get 'content item))
+                       (date (alist-get 'published item))
+                       (author (alist-get 'author item)))
+                  (sqlite-execute db "INSERT OR REPLACE INTO feeds (id, date_published, content, url, title, author, is_read, is_starred) VALUES (?, ?, ?, ?, ?, ?, 1, 0)"
+                                  (list (format "%s" id) date content url title author))
+                  (setq total-count (1+ total-count))))
+              (setq page (1+ page)))))
+        (kill-buffer entries-buf)))
     
-    ;; 3. Parse & Apply Unread State
+    ;; 2. Fetch & Apply Unread State
+    (message "Fetching unread state...")
+    (call-process "curl" nil unread-buf nil "-s" "-H" (concat "Authorization: Bearer " token) 
+                  "https://micro.blog/feeds/v2/unread_entries.json")
     (with-current-buffer unread-buf
       (goto-char (point-min))
       (let* ((json-array-type 'list)
@@ -99,19 +109,20 @@
           (dolist (uid unread-ids)
             (sqlite-execute db "UPDATE feeds SET is_read = 0 WHERE id = ?" (list (format "%s" uid)))))))
 
-    ;; 4. Parse & Apply Starred State
+    ;; 3. Fetch & Apply Starred State
+    (message "Fetching bookmarked state...")
+    (call-process "curl" nil starred-buf nil "-s" "-H" (concat "Authorization: Bearer " token) 
+                  "https://micro.blog/feeds/v2/starred_entries.json")
     (with-current-buffer starred-buf
       (goto-char (point-min))
       (let* ((json-array-type 'list)
              (starred-ids (condition-case nil (json-read) (error nil))))
-        ;; Reset all stars locally first, so if unstarred elsewhere, it syncs here
         (sqlite-execute db "UPDATE feeds SET is_starred = 0")
         (when starred-ids
           (dolist (uid starred-ids)
             (sqlite-execute db "UPDATE feeds SET is_starred = 1 WHERE id = ?" (list (format "%s" uid)))))))
     
     (sqlite-execute db "COMMIT")
-    (kill-buffer entries-buf)
     (kill-buffer unread-buf)
     (kill-buffer starred-buf)
     
@@ -120,7 +131,7 @@
       (with-current-buffer "*Inkling Headers*"
         (setq tabulated-list-entries (inkling-get-entries))
         (tabulated-list-print t)))
-    (message "Inkwell sync complete! Fetched %d items." total-count)))
+    (message "Inkwell sync complete! Fetched %d items across %d pages." total-count (1- page))))
 
 ;; =====================================================================
 ;; Core Actions
@@ -147,7 +158,7 @@
     (message "Copied: %s" url)))
 
 (defun inkling-toggle-bookmark ()
-  "Toggle the starred/bookmarked status of the current post."
+  "Toggle the starred/bookmarked status of the current post asynchronously."
   (interactive)
   (let* ((data (inkling-get-current-post-data))
          (id (nth 0 data))
@@ -158,41 +169,45 @@
          (token (microblog-get-token))
          (temp-file (make-temp-file "inkling-star")))
     
-    ;; 1. Update the local database
+    ;; 1. Update local database instantly
     (sqlite-execute db "UPDATE feeds SET is_starred = ? WHERE id = ?" (list new-status id))
     
-    ;; 2. Update the UI instantly
+    ;; 2. Update UI instantly
     (when (get-buffer "*Inkling Headers*")
       (with-current-buffer "*Inkling Headers*"
         (let ((entry (assoc id tabulated-list-entries)))
           (when entry
-            ;; Index 1 is the Star column in our format array
             (aset (cadr entry) 1 (if (= new-status 1) "★" " "))))
         (tabulated-list-print t)))
     
-    ;; 3. Send the command to Inkwell
+    ;; 3. Prepare payload
     (with-temp-file temp-file
       (insert (json-encode `((starred_entries . [,(string-to-number id)])))))
     
+    ;; 4. Fire background curl
     (let* ((method (if currently-starred "DELETE" "POST"))
-           (curl-buf (generate-new-buffer "*inkling-bookmark*")))
-      (call-process "curl" nil curl-buf nil "-s" "-w" "%{http_code}" "-X" method
-                    "-H" (concat "Authorization: Bearer " token)
-                    "-H" "Content-Type: application/json"
-                    "-d" (concat "@" temp-file)
-                    "https://micro.blog/feeds/v2/starred_entries.json")
-      (delete-file temp-file)
+           (curl-buf (generate-new-buffer "*inkling-bookmark*"))
+           (proc (start-process "inkling-bg-star" curl-buf "curl" "-s" "-w" "%{http_code}" "-X" method
+                                "-H" (concat "Authorization: Bearer " token)
+                                "-H" "Content-Type: application/json"
+                                "-d" (concat "@" temp-file)
+                                "https://micro.blog/feeds/v2/starred_entries.json")))
       
-      (with-current-buffer curl-buf
-        (goto-char (point-max))
-        (let ((http-status (buffer-substring (- (point-max) 3) (point-max))))
-          (if (member http-status '("200" "201" "202" "204"))
-              (message (if currently-starred "Removed bookmark." "Added bookmark!"))
-            (error "Bookmark sync failed. HTTP %s" http-status))))
-      (kill-buffer curl-buf))))
+      ;; 5. Clean up and report success in the background
+      (set-process-sentinel proc
+                            (lambda (process event)
+                              (when (memq (process-status process) '(exit signal))
+                                (with-current-buffer (process-buffer process)
+                                  (goto-char (point-max))
+                                  (let ((http-status (buffer-substring (- (point-max) 3) (point-max))))
+                                    (if (member http-status '("200" "201" "202" "204"))
+                                        (message (if currently-starred "Removed bookmark." "Added bookmark!"))
+                                      (message "Bookmark sync failed. HTTP %s" http-status))))
+                                (ignore-errors (delete-file temp-file))
+                                (kill-buffer (process-buffer process))))))))
 
 (defun inkling-toggle-read-status ()
-  "Toggle the read/unread status of the current post."
+  "Toggle the read/unread status of the current post asynchronously."
   (interactive)
   (let* ((data (inkling-get-current-post-data))
          (id (nth 0 data))
@@ -203,41 +218,44 @@
          (token (microblog-get-token))
          (temp-file (make-temp-file "inkling-toggle")))
     
-    ;; Update the local database
+    ;; 1. Update local database instantly
     (sqlite-execute db "UPDATE feeds SET is_read = ? WHERE id = ?" (list new-status id))
     
-    ;; Update the UI instantly
+    ;; 2. Update UI instantly
     (when (get-buffer "*Inkling Headers*")
       (with-current-buffer "*Inkling Headers*"
         (let ((entry (assoc id tabulated-list-entries)))
           (when entry
-            ;; Index 0 is the Status column. "•" if unread (0), space if read (1)
             (aset (cadr entry) 0 (if (= new-status 0) "•" " "))))
         (tabulated-list-print t)))
     
-    ;; Tell the Inkwell server
+    ;; 3. Prepare payload
     (with-temp-file temp-file
       (insert (json-encode `((unread_entries . [,(string-to-number id)])))))
     
+    ;; 4. Fire background curl
     (let* ((endpoint (if currently-read
-                         "https://micro.blog/feeds/v2/unread_entries.json"         ;; Mark Unread
-                       "https://micro.blog/feeds/v2/unread_entries/delete.json"))  ;; Mark Read
-           (curl-buf (generate-new-buffer "*inkling-network*")))
+                         "https://micro.blog/feeds/v2/unread_entries.json"
+                       "https://micro.blog/feeds/v2/unread_entries/delete.json"))
+           (curl-buf (generate-new-buffer "*inkling-network*"))
+           (proc (start-process "inkling-bg-toggle" curl-buf "curl" "-s" "-w" "%{http_code}" "-X" "POST"
+                                "-H" (concat "Authorization: Bearer " token)
+                                "-H" "Content-Type: application/json"
+                                "-d" (concat "@" temp-file)
+                                endpoint)))
       
-      (call-process "curl" nil curl-buf nil "-s" "-w" "%{http_code}" "-X" "POST"
-                    "-H" (concat "Authorization: Bearer " token)
-                    "-H" "Content-Type: application/json"
-                    "-d" (concat "@" temp-file)
-                    endpoint)
-      (delete-file temp-file)
-      
-      (with-current-buffer curl-buf
-        (goto-char (point-max))
-        (let ((http-status (buffer-substring (- (point-max) 3) (point-max))))
-          (if (member http-status '("200" "201" "202"))
-              (message (if currently-read "Marked as unread." "Marked as read."))
-            (error "Sync failed. HTTP %s" http-status))))
-      (kill-buffer curl-buf))))
+      ;; 5. Clean up and report success in the background
+      (set-process-sentinel proc
+                            (lambda (process event)
+                              (when (memq (process-status process) '(exit signal))
+                                (with-current-buffer (process-buffer process)
+                                  (goto-char (point-max))
+                                  (let ((http-status (buffer-substring (- (point-max) 3) (point-max))))
+                                    (if (member http-status '("200" "201" "202"))
+                                        (message (if currently-read "Marked as unread." "Marked as read."))
+                                      (message "Sync failed. HTTP %s" http-status))))
+                                (ignore-errors (delete-file temp-file))
+                                (kill-buffer (process-buffer process))))))))
 
 (defun inkling-quote-and-compose ()
   "Start a post quoting the active region without clobbering the list view."
@@ -272,22 +290,29 @@
     (message "Ready to compose!")))
 
 (defun inkling-mark-read (id)
-  "Mark a post as read on the server and locally."
+  "Mark a post as read locally and sync to the server asynchronously."
   (let* ((token (microblog-get-token))
          (db (sqlite-open inkling-db-file))
          (temp-file (make-temp-file "inkling-read")))
     
+    ;; 1. Update DB instantly
     (sqlite-execute db "UPDATE feeds SET is_read = 1 WHERE id = ?" (list id))
     
+    ;; 2. Prepare payload
     (with-temp-file temp-file
       (insert (json-encode `((unread_entries . [,(string-to-number id)])))))
     
-    (call-process "curl" nil nil nil "-s" "-X" "POST"
-                  "-H" (concat "Authorization: Bearer " token)
-                  "-H" "Content-Type: application/json"
-                  "-d" (concat "@" temp-file)
-                  "https://micro.blog/feeds/v2/unread_entries/delete.json")
-    (delete-file temp-file)))
+    ;; 3. Fire curl in the background so Emacs doesn't freeze
+    (let ((proc (start-process "inkling-bg-read" nil "curl" "-s" "-X" "POST"
+                               "-H" (concat "Authorization: Bearer " token)
+                               "-H" "Content-Type: application/json"
+                               "-d" (concat "@" temp-file)
+                               "https://micro.blog/feeds/v2/unread_entries/delete.json")))
+      
+      ;; 4. Set a background watcher to clean up the temp file when curl finishes
+      (set-process-sentinel proc
+                            (lambda (process event)
+                              (ignore-errors (delete-file temp-file)))))))
 
 (defun inkling-open-in-browser ()
   "Open the current post's URL in the system's default web browser."
