@@ -41,6 +41,11 @@ machine micro.blog login apikey password YOUR_APP_TOKEN_HERE
 ```
 *(Replace `YOUR_APP_TOKEN_HERE` with your actual token).*
 
+## Proofreading setup (Optional)
+
+To use this feature, you must obtain a free Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey) and add it to  your `init.el`:
+`(setq microblog-gemini-api-key "YOUR_API_KEY_HERE")`
+
 ## Usage
 
 Start the app by running `M-x microblog-list` (or using your custom keybinding).
@@ -52,6 +57,7 @@ If your list is empty, run `M-x microblog-sync-posts` to download your timeline 
 When you are in the `*Micro.blog Headers*` buffer, use the following keys:
 
 * `c` - **Compose** a new post.
+* `o` - **Open** the currently highlighted post in your system's default web browser.
 * `e` - **Edit** the currently highlighted post.
 * `w` - **Copy URL** of the currently highlighted post to your system clipboard.
 * `s` - **Search** the full text of all posts, titles, and tags.
@@ -63,6 +69,7 @@ When writing or editing a post, Emacs will present an email-style buffer with `T
 
 * `C-c C-c` - **Publish / Save**. Parses your buffer and sends it to Micro.blog.
 * `C-c C-t` - **Tags / Categories**. Opens an auto-complete prompt at the bottom of the screen containing all tags you've previously used in your database. You can select multiple tags separated by commas.
+* `C-c C-p` - **Proofread**. Mark up errors in spelling, typography, and Hugo/Markdown syntax using Google's Gemini 2.5 Flash API. Requires API token setup (see above).
 * `C-c C-a` - **Attach Image**. Prompts you to select a local image file and provide Alt Text. Uploads the image to Micro.blog in the background and inserts the Markdown `![alt](url)` link directly at your cursor.
 * `C-c C-k` - **Cancel** (Kills the buffer without saving).
 
@@ -71,6 +78,17 @@ When writing or editing a post, Emacs will present an email-style buffer with `T
 * `M-x microblog-sync-posts`: Force a manual download of your latest posts from the server.
 * `M-x microblog-reset-db`: Wipes the local SQLite database entirely. Use this if you want to perform a clean, fresh sync from the server.
 
+## Proofreading
+
+Microbe will send your text to the API in the background. Once the review is complete, Emacs will automatically open an `ediff` split-screen control panel, allowing you to quickly swipe through the suggested changes:
+
+* `a` : **Accept** the AI's edit (replaces your original text) and jump to the next suggestion.
+* `d` : **Decline** the edit (keeps your original text) and jump to the next suggestion.
+* `n` : **Next** suggestion.
+* `p` : **Previous** suggestion.
+* `q` : **Quit** the review session and close the extra windows.
+
+*Note: If you highlight a specific region of text before pressing `C-c C-p`, the AI will only review and diff that specific selection.*
 
 # inkling.el (Inkwell RSS Reader)
 

@@ -7,7 +7,7 @@
 ;; URL: https://github.com/miljko/microbe.el
 
 ;;; Commentary:
-;; An offline-first, high-performance manager for Micro.blog.
+;; An offline-first, high-performance client for Micro.blog.
 ;; Uses Emacs 29's built-in SQLite to store posts locally for instant
 ;; loading and full-text search. Bypasses Emacs's internal network 
 ;; quirks by using `curl` for API communication, UTF-8 
@@ -342,6 +342,117 @@
       (switch-to-buffer-other-window buffer)
       (message "Edit mode. Press C-c C-c to save."))))
 
+(defun microblog--gemini-payload (text)
+  "Construct the strict JSON payload instructing Gemini to only copy-edit."
+  (let* ((system-instruction "You are a strict, technical copy-editor. Your ONLY job is to fix spelling mistakes, typographical errors, and invalid Markdown or Hugo shortcode syntax. You MUST NOT alter the author's voice, style, phrasing, vocabulary, or structural choices. Output ONLY the corrected text. Do not add conversational filler, introductions, or explanations.")
+         (payload `((contents . [((parts . [((text . ,text))]))])
+                    (systemInstruction . ((parts . [((text . ,system-instruction))])))
+                    (generationConfig . ((temperature . 0.1))))))
+    (json-encode payload)))
+
+(defun microblog-gemini-copy-edit ()
+  "Send the current buffer (or region) to Gemini and ediff the result."
+  (interactive)
+  (if (string-empty-p microblog-gemini-api-key)
+      (error "Please set `microblog-gemini-api-key` first!"))
+  
+  (let* ((use-region (use-region-p))
+         (orig-text (if use-region
+                        (buffer-substring-no-properties (region-beginning) (region-end))
+                      (buffer-substring-no-properties (point-min) (point-max))))
+         (orig-buf (current-buffer))
+         (temp-file (make-temp-file "microbe-gemini"))
+         (curl-buf (generate-new-buffer "*microbe-gemini-network*"))
+         (output-buf-name "*Microbe: Gemini Edit*")
+         (api-url (format "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s" microblog-gemini-api-key)))
+    
+    (with-temp-file temp-file
+      (insert (microblog--gemini-payload orig-text)))
+    
+    (message "Asking Gemini 2.5 Flash to review your draft...")
+    
+    (let ((proc (start-process "microbe-gemini-proc" curl-buf "curl" "-s" "-X" "POST"
+                               "-H" "Content-Type: application/json"
+                               "-d" (concat "@" temp-file)
+                               api-url)))
+      
+      (set-process-sentinel proc
+        (lambda (process event)
+          (when (memq (process-status process) '(exit signal))
+            (with-current-buffer (process-buffer process)
+              (goto-char (point-min))
+              (let* ((json-object-type 'alist)
+                     (json-array-type 'list)
+                     (response (condition-case nil (json-read) (error nil)))
+                     (candidates (alist-get 'candidates response))
+                     (content (when candidates (alist-get 'content (car candidates))))
+                     (parts (when content (alist-get 'parts content)))
+                     (edited-text (when parts (alist-get 'text (car parts))))
+                     (error-msg (alist-get 'error response)))
+                
+                (if edited-text
+                    (progn
+                      (with-current-buffer (get-buffer-create output-buf-name)
+                        (erase-buffer)
+                        (insert edited-text)
+                        (when (fboundp 'markdown-mode) (markdown-mode)))
+                      
+                      (if use-region
+                          (let ((region-buf (get-buffer-create "*Microbe: Original Region*")))
+                            (with-current-buffer region-buf
+                              (erase-buffer)
+                              (insert orig-text)
+                              (when (fboundp 'markdown-mode) (markdown-mode)))
+                            (ediff-buffers region-buf output-buf-name))
+                        (ediff-buffers orig-buf output-buf-name))
+                      
+                      (message "Review complete! Use 'n' and 'p' in the Ediff panel to navigate."))
+                  
+                  (message "Gemini API failed: %s"
+                           (if error-msg (alist-get 'message error-msg) "Unknown error")))))
+            
+            (ignore-errors (delete-file temp-file))
+            (kill-buffer (process-buffer process))))))))
+
+(defun microblog-ediff-accept ()
+  "Accept the Gemini edit (copy Buffer B to Buffer A) and jump to the next."
+  (interactive)
+  (ediff-copy-B-to-A nil)
+  (ediff-next-difference))
+
+(defun microblog-ediff-decline ()
+  "Decline the Gemini edit (keep your original text) and jump to the next."
+  (interactive)
+  (ediff-next-difference))
+
+;; Create the custom transparent keymap
+(defvar microblog-ediff-keys-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "a") 'microblog-ediff-accept)
+    (define-key map (kbd "d") 'microblog-ediff-decline)
+    map)
+  "Keymap for Microbe Ediff controls.")
+
+;; Wrap the keymap in a Minor Mode
+(define-minor-mode microblog-ediff-keys-mode
+  "Minor mode to overlay Accept/Decline keys in Ediff."
+  :lighter " Review"
+  :keymap microblog-ediff-keys-map)
+
+(defun microblog-setup-ediff-keys ()
+  "Activate custom keys if this is a Gemini review session."
+  (when (and (boundp 'ediff-buffer-B)
+             (buffer-live-p ediff-buffer-B)
+             (string= (buffer-name ediff-buffer-B) "*Microbe: Gemini Edit*"))
+    ;; Turn on our custom keys only in the Ediff Control Panel
+    (microblog-ediff-keys-mode 1)))
+
+;; Hook into the session startup, which runs every time!
+(add-hook 'ediff-startup-hook 'microblog-setup-ediff-keys)
+
+
+(define-key microblog-edit-mode-map (kbd "C-c C-p") 'microblog-gemini-copy-edit)
+
 ;; =====================================================================
 ;; List View Mode
 ;; =====================================================================
@@ -386,6 +497,19 @@
         (progn (kill-new url) (message "Copied: %s" url))
       (error "No URL found for this post."))))
 
+(defun microblog-open-in-browser ()
+  "Open the live URL of the current post in the system's default web browser."
+  (interactive)
+  (let* ((id (tabulated-list-get-id))
+         (db (sqlite-open microblog-db-file))
+         (row (car (sqlite-select db "SELECT url FROM posts WHERE id = ?" (list id))))
+         (url (nth 0 row)))
+    (if (and url (not (string-empty-p url)))
+        (progn 
+          (browse-url url) 
+          (message "Opening in browser: %s" url))
+      (error "No URL found for this post."))))
+
 (defun microblog-search (term)
   "Search the full text of titles, categories, and bodies for TERM."
   (interactive "sSearch Micro.blog: ")
@@ -427,6 +551,7 @@
 (define-key microblog-headers-mode-map (kbd "w") 'microblog-copy-url)
 (define-key microblog-headers-mode-map (kbd "s") 'microblog-search)
 (define-key microblog-headers-mode-map (kbd "g") 'microblog-list)
+(define-key microblog-headers-mode-map (kbd "o") 'microblog-open-in-browser)
 
 ;; =====================================================================
 ;; Main Entry Point
