@@ -1,6 +1,6 @@
 # microbe.el
 
-A high-performance, offline-first Emacs client for [Micro.blog](https://micro.blog).
+An offline Emacs client for [Micro.blog](https://micro.blog).
 
 Inspired by native desktop blogging apps, `microbe.el` stores your entire post history locally using Emacs 29's built-in SQLite. This allows for instant loading, full-text offline search, and a snappy interface. It utilizes `curl` under the hood to bypass Emacs's internal network quirks, guaranteeing flawless UTF-8 emoji support and rock-solid media uploads.
 
@@ -90,11 +90,26 @@ Microbe will send your text to the API in the background. Once the review is com
 
 *Note: If you highlight a specific region of text before pressing `C-c C-p`, the AI will only review and diff that specific selection.*
 
-# inkling.el (Inkwell RSS Reader)
+# inkling.el (Inkwell RSS Reader & Bookmarks)
 
-An offline-first, keyboard-driven RSS client for Micro.blog's [Inkwell](https://micro.blog/feeds) service, built as a companion to `microbe.el`.
+An offline-first, keyboard-driven RSS client and Bookmarks Manager for Micro.blog's [Inkwell](https://micro.blog/feeds) service, built as a companion to `microbe.el`.
 
-Inkling uses Emacs 29's built-in SQLite to store your feeds locally, ensuring instant load times. It talks directly to Inkwell's Feedbin-compatible API via `curl` to flawlessly sync your unread counts, bookmarks, and subscriptions in the background.
+Inkling uses Emacs 29's built-in SQLite to store your feeds and bookmarks locally, ensuring instant load times. It talks directly to Micro.blog APIs via `curl` to flawlessly sync your unread counts, tags, and subscriptions in the background.
+
+## What's New in Version 2.0
+
+**New Features**
+* **Dedicated Bookmarks Manager:** Browse, read, and manage your Micro.blog bookmarks offline (`M-x inkling-bookmarks`).
+* **Timeline Integration:** Bookmark any post from your timeline and assign tags to it with a single keystroke (`M-b`).
+* **Tag & Filter:** Edit tags for any bookmark (`t`), or filter your view by tag (`f`).
+* **Smart HTML Parsing:** Inkling now natively queries websites in the background to automatically fetch missing HTML `<title>` tags for external bookmarks.
+* **Deletion:** Permanently delete bookmarks from your local machine and Micro.blog server simultaneously (`d`).
+
+**Bug Fixes**
+* **Multi-line Title Breakage:** Aggressively sanitizes blank lines and carriage returns from API feeds (like *And now it's all this*) to prevent layout distortion in `tabulated-list-mode`.
+* **Missing Author Fallback:** Intelligent regex fallback for feeds missing an Author tag (e.g., *The shape of everything*); now displays the base domain name instead of generic blank space.
+* **Duplicate Mentions Crash:** Employs advanced SQLite `GROUP BY` logic to deduplicate noisy Mentions feeds, preventing Emacs buffer-name collisions when navigating between identical posts.
+* **Bulletproof Database Locks:** Wrapped all sync transactions in strict `unwind-protect` blocks. A network timeout or manual abort will no longer permanently lock your `inkling.sqlite` file.
 
 ## Dependencies
 
@@ -112,35 +127,50 @@ Assuming you have already installed and configured `microbe.el`:
 ```elisp
 (require 'inkling)
 
-;; Map a global shortcut to open your RSS feeds
+;; Map global shortcuts for your Feeds and Bookmarks
 (global-set-key (kbd "C-c i") 'inkling-list)
+(global-set-key (kbd "C-c b") 'inkling-bookmarks)
 ```
 
-## Usage & Workflow
+## Reading RSS Feeds
 
-Start the reader by running `M-x inkling-list` (or using your custom keybinding).
-
-If your list is empty, press **`g`** to perform an initial sync from the Inkwell server. Inkling pulls your entries, unread state, and bookmarked (starred) items into a local SQLite database.
+Start the reader by running `M-x inkling-list`. If your list is empty, press **`g`** to perform an initial sync from the Inkwell server. Inkling pulls your entries, unread state, and bookmarked (starred) items into a local SQLite database.
 
 ### The List View (`*Inkling Headers*`)
 
-Posts are displayed in a clean, tabulated list. Unread posts are marked with a bullet (`•`) and bookmarked posts are marked with a star (`★`). You can click the "Date" header to sort chronologically down to the exact second.
+Posts are displayed in a clean, tabulated list. Unread posts are marked with a bullet (`•`) and natively starred posts are marked with a star (`★`). You can click the "Date" header to sort chronologically down to the exact second.
 
 * `RET` - **Read**: Open the post in a reading pane and mark it as read on the server.
 * `u` - **Toggle Unread**: Filter the list to show *only* unread items, or expand to show all items.
 * `g` - **Sync/Refresh**: Download the latest feeds and unread states from Micro.blog.
+* `M-b` - **Bookmark**: Bookmark the selected URL to your Micro.blog account and assign tags via the Micropub API.
 * `j` / `k` - **Next / Previous**: Move your selection up or down the list. 
 
 ### The Reading View
 
-When reading a post, Inkling renders the HTML cleanly using Emacs's built-in `shr` engine. 
-
-You do not need to switch back to the list window to navigate. The following keys work seamlessly whether your cursor is in the List View or the Reading View:
+When reading a post, Inkling renders the HTML cleanly using Emacs's built-in `shr` engine. You do not need to switch back to the list window to navigate.
 
 * `j` / `k` - **Next / Previous Post**: Instantly close the current post, move down/up the list, and open the next post. Perfect for rapidly clearing out your unread queue.
 * `r` - **Toggle Read Status**: Instantly mark a post as read/unread locally and sync the state to the server in the background.
-* `b` - **Toggle Bookmark**: Add or remove a star (`★`). Bookmarks are synced directly to your Micro.blog account.
+* `b` - **Bookmark**: Add as a bookmark to Micro.blog and star (`★`) the post.
+* `M-b` - **Bookmark with tags**: Save the post as a tagged bookmark to Micro.blog.
 * `o` - **Open in Browser**: Launch the original post URL in your system's default web browser.
 * `w` - **Copy URL**: Push the post's live URL directly to your system clipboard.
 * `c` - **Quote & Blog**: Highlight any text in the reading view and press `c`. Inkling will instantly open a 3-pane layout with the `microbe.el` composer, perfectly formatting your highlighted text as a Markdown blockquote and appending the source link.
 * `q` - **Quit**: Close the reading window.
+
+## Managing Bookmarks
+
+Open the dedicated Bookmarks manager via `M-x inkling-bookmarks`. Like the feed reader, it relies on a local SQLite table and displays a 4-column layout (Date, Tags, Title, Domain).
+
+Press **`g`** to synchronize your bookmarks. If any bookmarks lack a specific title from the API, Inkling will safely spin up asynchronous background workers to parse the HTML DOM of the source website and populate the title natively inside Emacs.
+
+### Bookmarks View Keybindings
+
+* `RET` - **Read**: View the bookmark content/notes within Emacs's `shr` rendering engine.
+* `f` - **Filter**: Narrow the list view to a specific tag. Leave blank to clear filters.
+* `t` - **Edit Tags**: Modify the comma-separated tags for the currently selected bookmark. Updates instantly locally and syncs to the server in the background.
+* `d` - **Delete**: Permanently remove a bookmark. (Prompts for confirmation).
+* `o` - **Open in Browser**: Launch the link natively.
+* `w` - **Copy URL**: Copy the link to your clipboard.
+* `g` - **Sync**: Pull down new bookmarks and auto-fetch missing titles.
