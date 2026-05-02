@@ -1,5 +1,5 @@
 ;;; inkling.el --- An Inkwell (Micro.blog) RSS Client -*- lexical-binding: t; -*-
-;;; Version 2.0 (April 25, 2026)
+;;; Version 2.1 (May 2, 2026)
 
 (require 'sqlite)
 (require 'json)
@@ -25,6 +25,9 @@ If left empty, Inkling will prompt you for the URL when you run a sync.")
 
 (defvar-local inkling-show-unread-only nil 
   "Tracks whether the list view is filtered to unread items.")
+
+(defvar inkling-last-read-buffer nil
+  "Tracks the most recently opened reading buffer so it can be auto-killed.")
 
 ;; =====================================================================
 ;; Database
@@ -377,6 +380,30 @@ If left empty, Inkling will prompt you for the URL when you run a sync.")
             (message "You are at the top of the list.")))
       (error "List window not visible!"))))
 
+(defun inkling-list-next-post ()
+  "Move down one line and preview the post in the reading pane."
+  (interactive)
+  (forward-line 1)
+  (if (tabulated-list-get-id)
+      (let ((list-win (selected-window)))
+        (inkling-read-post)
+        ;; inkling-read-post switches to the reader window. 
+        ;; This instantly pulls focus back to the list.
+        (select-window list-win)) 
+    (forward-line -1)
+    (message "Bottom of list.")))
+
+(defun inkling-list-prev-post ()
+  "Move up one line and preview the post in the reading pane."
+  (interactive)
+  (forward-line -1)
+  (if (tabulated-list-get-id)
+      (let ((list-win (selected-window)))
+        (inkling-read-post)
+        (select-window list-win))
+    (forward-line 1)
+    (message "Top of list.")))
+
 ;; =====================================================================
 ;; Read Mode
 ;; =====================================================================
@@ -404,11 +431,9 @@ If left empty, Inkling will prompt you for the URL when you run a sync.")
   (let* ((id (tabulated-list-get-id))
          (db (sqlite-open inkling-db-file))
          (row (car (sqlite-select db "SELECT title, content, url FROM feeds WHERE id = ?" (list id))))
-         ;; Clean the title to prevent newlines in buffer names
          (title (inkling-clean-string (or (nth 0 row) "Untitled")))
          (content (nth 1 row))
          (url (nth 2 row))
-         ;; THE FIX: Append the unique ID to the buffer name
          (buf (get-buffer-create (format "*Inkling: %s [%s]*" title id))))
     
     (inkling-mark-read id)
@@ -419,10 +444,19 @@ If left empty, Inkling will prompt you for the URL when you run a sync.")
         (aset (cadr entry) 0 " ")))
     (tabulated-list-print t)
 
+    ;; NEW: Clean up the previously opened reading buffer
+    (when (and inkling-last-read-buffer
+               (buffer-live-p inkling-last-read-buffer)
+               (not (eq inkling-last-read-buffer buf)))
+      (kill-buffer inkling-last-read-buffer))
+
+    ;; NEW: Track this new buffer for the next time
+    (setq inkling-last-read-buffer buf)
+
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (format "<h1>%s</h1><br>" (or title "Untitled")))
+        (insert (format "<h1><a href=\"%s\">%s</a></h1><br>" (or url "#") (or title "Untitled")))
         (insert content)
         (shr-render-region (point-min) (point-max))
         (goto-char (point-min))
@@ -432,7 +466,7 @@ If left empty, Inkling will prompt you for the URL when you run a sync.")
         (inkling-read-mode 1)
         (visual-line-mode 1)
         (read-only-mode 1)))
-    (switch-to-buffer-other-window buf)))
+    (display-buffer buf)))
 
 ;; =====================================================================
 ;; Headers Mode (List View)
@@ -467,6 +501,8 @@ If left empty, Inkling will prompt you for the URL when you run a sync.")
 (define-key inkling-headers-mode-map (kbd "g") 'inkling-sync-feeds)
 (define-key inkling-headers-mode-map (kbd "u") 'inkling-toggle-unread)
 (define-key inkling-headers-mode-map (kbd "M-b") 'inkling-bookmark-current)
+(define-key inkling-headers-mode-map (kbd "j") 'inkling-list-next-post)
+(define-key inkling-headers-mode-map (kbd "k") 'inkling-list-prev-post)
 (define-key inkling-read-mode-map (kbd "M-b") 'inkling-bookmark-current)
 
 (defun inkling-sort-by-date (a b)
@@ -781,7 +817,7 @@ If left empty, Inkling will prompt you for the URL when you run a sync.")
       (setq inkling-bookmark-tag-filter nil)
       (setq tabulated-list-entries (inkling-get-bookmarks-entries))
       (tabulated-list-print t))
-    (switch-to-buffer buf)))
+    (display-buffer buf)))
 
 (require 'url-util) ;; Ensures URL encoding functions are available
 

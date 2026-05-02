@@ -103,22 +103,16 @@ Microbe will send your text to the API in the background. Once the review is com
 
 An offline-first, keyboard-driven RSS client and Bookmarks Manager for Micro.blog's [Inkwell](https://micro.blog/feeds) service, built as a companion to `microbe.el`.
 
-Inkling uses Emacs 29's built-in SQLite to store your feeds and bookmarks locally, ensuring instant load times. It talks directly to Micro.blog APIs via `curl` to flawlessly sync your unread counts, tags, and subscriptions in the background.
+Inkling uses Emacs 29's built-in SQLite to store your feeds and bookmarks locally, ensuring instant load times. It talks directly to Micro.blog APIs via `curl` to  sync your unread counts, tags, and subscriptions in the background.
 
-## What's New in Version 2.0
+## What's New in Version 2.1
 
-**New Features**
-* **Dedicated Bookmarks Manager:** Browse, read, and manage your Micro.blog bookmarks offline (`M-x inkling-bookmarks`).
-* **Timeline Integration:** Bookmark any post from your timeline and assign tags to it with a single keystroke (`M-b`).
-* **Tag & Filter:** Edit tags for any bookmark (`t`), or filter your view by tag (`f`).
-* **Smart HTML Parsing:** Inkling now natively queries websites in the background to automatically fetch missing HTML `<title>` tags for external bookmarks.
-* **Deletion:** Permanently delete bookmarks from your local machine and Micro.blog server simultaneously (`d`).
+**New Features & Quality of Life**
+* **Seamless Two-Pane Navigation:** Pressing `j` and `k` directly in the List View now moves the cursor, previews the post in the reading pane, and marks it as read in the background without losing focus.
+* **Smart Focus Management:** Opening a post (via `RET`, `j`, or `k`) from the list view now displays the content in the adjacent window but keeps your cursor  in the list.
+* **Auto-Cleanup / Anti-Bloat:** Opening a new post automatically kills the previously read buffer.
 
-**Bug Fixes**
-* **Multi-line Title Breakage:** Aggressively sanitizes blank lines and carriage returns from API feeds (like *And now it's all this*) to prevent layout distortion in `tabulated-list-mode`.
-* **Missing Author Fallback:** Intelligent regex fallback for feeds missing an Author tag (e.g., *The shape of everything*); now displays the base domain name instead of generic blank space.
-* **Duplicate Mentions Crash:** Employs advanced SQLite `GROUP BY` logic to deduplicate noisy Mentions feeds, preventing Emacs buffer-name collisions when navigating between identical posts.
-* **Bulletproof Database Locks:** Wrapped all sync transactions in strict `unwind-protect` blocks. A network timeout or manual abort will no longer permanently lock your `inkling.sqlite` file.
+*(For changes in v2.0, including the dedicated Bookmarks Manager, smart HTML parsing, and multi-line API breakage fixes, see the commit history).*
 
 ## Dependencies
 
@@ -149,11 +143,11 @@ Start the reader by running `M-x inkling-list`. If your list is empty, press **`
 
 Posts are displayed in a clean, tabulated list. Unread posts are marked with a bullet (`•`) and natively starred posts are marked with a star (`★`). You can click the "Date" header to sort chronologically down to the exact second.
 
-* `RET` - **Read**: Open the post in a reading pane and mark it as read on the server.
+* `RET` - **Read**: Display the post in the adjacent reading pane and mark it as read.
+* `j` / `k` - **Next / Previous**: Move your selection up or down the list. Instantly previews the post in the reading pane while keeping your cursor in the list.
 * `u` - **Toggle Unread**: Filter the list to show *only* unread items, or expand to show all items.
 * `g` - **Sync/Refresh**: Download the latest feeds and unread states from Micro.blog.
 * `M-b` - **Bookmark**: Bookmark the selected URL to your Micro.blog account and assign tags via the Micropub API.
-* `j` / `k` - **Next / Previous**: Move your selection up or down the list. 
 
 ### The Reading View
 
