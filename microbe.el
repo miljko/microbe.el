@@ -26,7 +26,7 @@
 (defvar microblog-db-file (expand-file-name "microblog.sqlite" user-emacs-directory)
   "Path to the local Micro.blog SQLite database.")
 
-(defvar microblog-gemini-api-key "AIzaSyB3yU2_sN5rctYtAt7CcZjqZoplJkNbtTY"
+(defvar microblog-gemini-api-key ""
   "Your Google Gemini API key for copy-editing drafts.
 Get one for free at: https://aistudio.google.com/app/apikey")
 
