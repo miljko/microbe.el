@@ -7,11 +7,7 @@
 ;; URL: https://github.com/miljko/microbe.el
 
 ;;; Commentary:
-;; An offline client for Micro.blog.
-;; Uses Emacs 29's built-in SQLite to store posts locally for instant
-;; loading and full-text search. Bypasses Emacs's internal network 
-;; quirks by using `curl` for API communication, UTF-8 
-;; handling, and media uploads.
+;; An offline  client for Micro.blog.
 
 ;;; Code:
 
@@ -25,10 +21,6 @@
 
 (defvar microblog-db-file (expand-file-name "microblog.sqlite" user-emacs-directory)
   "Path to the local Micro.blog SQLite database.")
-
-(defvar microblog-gemini-api-key "AIzaSyB3yU2_sN5rctYtAt7CcZjqZoplJkNbtTY"
-  "Your Google Gemini API key for copy-editing drafts.
-Get one for free at: https://aistudio.google.com/app/apikey")
 
 (defvar-local microblog-edit-post-id nil 
   "Tracks the ID of the post currently being edited. Nil if composing a new post.")
@@ -51,13 +43,8 @@ Get one for free at: https://aistudio.google.com/app/apikey")
         content_html TEXT,
         url TEXT,
         title TEXT,
-        categories TEXT,
-        is_draft INTEGER DEFAULT 0
+        categories TEXT
       );")
-    ;; Schema migration for existing users
-    (condition-case nil
-        (sqlite-execute db "ALTER TABLE posts ADD COLUMN is_draft INTEGER DEFAULT 0")
-      (error nil))
     (message "Micro.blog database initialized.")))
 
 (defun microblog-reset-db ()
@@ -127,8 +114,8 @@ Get one for free at: https://aistudio.google.com/app/apikey")
                   
                   (when (listp content) (setq content (alist-get 'html content)))
                   
-                  (sqlite-execute db "INSERT OR REPLACE INTO posts (id, date_published, content_html, url, title, categories, is_draft) VALUES (?, ?, ?, ?, ?, ?, 0)"
-                (list id date content url title categories))
+                  (sqlite-execute db "INSERT OR REPLACE INTO posts (id, date_published, content_html, url, title, categories) VALUES (?, ?, ?, ?, ?, ?)"
+                                  (list id date content url title categories))
                   (setq total-count (1+ total-count))))
               
               (setq offset (+ offset limit))))
@@ -141,9 +128,8 @@ Get one for free at: https://aistudio.google.com/app/apikey")
 ;; Publishing Engine (Create & Update)
 ;; =====================================================================
 
-(defun microblog-submit-update (&optional as-draft)
-  "Parse the buffer and send to Micro.blog. Handles both New and Edited posts.
-If AS-DRAFT is non-nil, the post is sent to Micro.blog as a draft."
+(defun microblog-submit-update ()
+  "Parse the buffer and send to Micro.blog. Handles both New and Edited posts."
   (interactive)
   (let ((title "") (categories "") (body "")
         (edit-buf (current-buffer))
@@ -166,7 +152,7 @@ If AS-DRAFT is non-nil, the post is sent to Micro.blog as a draft."
         (error "Could not find the '--' separator. Please restore it before saving."))
       
       (let* ((cat-list (if (string-empty-p categories) '() (split-string categories "," t "[ \t]+")))
-             (temp-file (make-temp-file "microbe-payload"))
+             (temp-file (make-temp-file "microblog-payload"))
              (payload nil))
         
         ;; Construct JSON payload depending on Create vs Update
@@ -174,24 +160,19 @@ If AS-DRAFT is non-nil, the post is sent to Micro.blog as a draft."
             (let ((props `((content . ,(vector body)))))
               (unless (string-empty-p title) (push `(name . ,(vector title)) props))
               (when cat-list (push `(category . ,(vconcat cat-list)) props))
-              (when as-draft (push `(post-status . ["draft"]) props))
               (setq payload `((type . ["h-entry"]) (properties . ,props))))
           (let ((replace-alist `((content . ,(vector body)))))
             (unless (string-empty-p title) (push `(name . ,(vector title)) replace-alist))
             (when cat-list (push `(category . ,(vconcat cat-list)) replace-alist))
-            ;; If updating a draft to publish, explicitly set published status
-            (if as-draft 
-                (push `(post-status . ["draft"]) replace-alist)
-              (push `(post-status . ["published"]) replace-alist))
             (setq payload `((action . "update") (url . ,post-url) (replace . ,replace-alist)))))
         
         (with-temp-file temp-file (insert (json-encode payload)))
-        (message (if as-draft "Saving draft to Micro.blog..." (if is-new "Publishing new post..." "Sending update...")))
+        (message (if is-new "Publishing new post..." "Sending update..."))
         
-        ;; Send via curl for robust networking (using -i to get headers)
+        ;; Send via curl for robust networking
         (let* ((curl-output-buffer (generate-new-buffer "*curl-output*"))
                (exit-code (call-process "curl" nil curl-output-buffer nil
-                                        "-i" "-s" "-X" "POST"
+                                        "-s" "-w" "%{http_code}" "-X" "POST"
                                         "-H" (concat "Authorization: Bearer " (microblog-get-token))
                                         "-H" "Content-Type: application/json"
                                         "-d" (concat "@" temp-file)
@@ -200,53 +181,30 @@ If AS-DRAFT is non-nil, the post is sent to Micro.blog as a draft."
           
           ;; Parse result
           (with-current-buffer curl-output-buffer
-            (goto-char (point-min))
-            (let ((http-status nil)
-                  (location-url nil))
-              
-              ;; Parse HTTP status
-              (when (re-search-forward "^HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
-                (setq http-status (match-string 1)))
-              
-              ;; Parse Location header
-              (goto-char (point-min))
-              (when (re-search-forward "^[Ll]ocation:[ \t]*\\(.*\\)\r?$" nil t)
-                (setq location-url (string-trim (match-string 1))))
+            (goto-char (point-max))
+            (let* ((http-status (buffer-substring (- (point-max) 3) (point-max)))
+                   (response-body (buffer-substring (point-min) (- (point-max) 3))))
               
               (if (member http-status '("200" "201" "202" "204"))
                   (progn
                     (kill-buffer edit-buf)
-                    
-                    ;; Persist the Draft locally using the returned Location URL
-                    (let* ((final-url (or location-url post-url))
-                           (final-id (or post-id final-url))
-                           (db (sqlite-open microblog-db-file))
-                           (draft-flag (if as-draft 1 0))
-                           (date (format-time-string "%Y-%m-%dT%H:%M:%S%:z")))
-                      
-                      (sqlite-execute db "INSERT OR REPLACE INTO posts (id, date_published, content_html, url, title, categories, is_draft) VALUES (?, ?, ?, ?, ?, ?, ?)"
-                                      (list final-id date body final-url title categories draft-flag)))
-                    
-                    (if (and is-new (not as-draft))
+                    (if is-new
                         (progn
                           (message "Published! Fetching latest posts...")
                           (microblog-sync-posts))
-                      (message (if as-draft "Success! Draft saved." "Success! Post updated.")))
+                      ;; Optimistic local UI update for edits
+                      (let ((db (sqlite-open microblog-db-file)))
+                        (sqlite-execute db "UPDATE posts SET title = ?, content_html = ?, categories = ? WHERE id = ?"
+                                        (list title body categories post-id)))
+                      (message "Success! Post updated."))
                     
-                    ;; Refresh UI if open
-                    (let ((list-buf (get-buffer "*Micro.blog Headers*"))
-                          (drafts-buf (get-buffer "*Micro.blog Drafts*")))
+                    ;; Refresh UI
+                    (let ((list-buf (get-buffer "*Micro.blog Headers*")))
                       (when list-buf
                         (with-current-buffer list-buf
                           (setq tabulated-list-entries (microblog-get-entries))
-                          (tabulated-list-print t)))
-                      (when drafts-buf
-                        (with-current-buffer drafts-buf
-                          (setq tabulated-list-entries (microblog-get-draft-entries))
                           (tabulated-list-print t)))))
-                (error "Operation failed! HTTP %s. Server said: %s" 
-                       (or http-status "Unknown") 
-                       (buffer-substring (point-min) (point-max))))))
+                (error "Operation failed! HTTP %s. Server said: %s" http-status response-body))))
           (kill-buffer curl-output-buffer))))))
 
 ;; =====================================================================
@@ -325,7 +283,6 @@ If AS-DRAFT is non-nil, the post is sent to Micro.blog as a draft."
 (defvar microblog-edit-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") 'microblog-submit-update)
-    (define-key map (kbd "C-c C-z") 'microblog-save-draft)
     (define-key map (kbd "C-c C-k") 'kill-buffer-and-window)
     (define-key map (kbd "C-c C-t") 'microblog-insert-categories)
     (define-key map (kbd "C-c C-a") 'microblog-attach-image)
@@ -508,11 +465,9 @@ If AS-DRAFT is non-nil, the post is sent to Micro.blog as a draft."
       (string-trim (buffer-string)))))
 
 (defun microblog-get-entries ()
-  "Query DB and format rows for tabulated list (excluding drafts)."
+  "Query DB and format rows for tabulated list."
   (let* ((db (sqlite-open microblog-db-file))
-         (rows (condition-case nil
-                   (sqlite-select db "SELECT id, date_published, content_html, url, title, categories FROM posts WHERE is_draft IS NULL OR is_draft = 0 ORDER BY date_published DESC")
-                 (error (sqlite-select db "SELECT id, date_published, content_html, url, title, categories FROM posts ORDER BY date_published DESC")))))
+         (rows (sqlite-select db "SELECT id, date_published, content_html, url, title, categories FROM posts ORDER BY date_published DESC")))
     (mapcar (lambda (row)
               (let* ((id (nth 0 row))
                      (date (nth 1 row))
@@ -526,42 +481,6 @@ If AS-DRAFT is non-nil, the post is sent to Micro.blog as a draft."
                 (when (> (length summary) 60) (setq summary (concat (substring summary 0 57) "...")))
                 (list id (vector date-display title (or categories "") summary))))
             rows)))
-
-(defun microblog-get-draft-entries ()
-  "Query DB and format rows exclusively for drafts."
-  (let* ((db (sqlite-open microblog-db-file))
-         (rows (condition-case nil
-                   (sqlite-select db "SELECT id, date_published, content_html, url, title, categories FROM posts WHERE is_draft = 1 ORDER BY date_published DESC")
-                 (error nil))))
-    (mapcar (lambda (row)
-              (let* ((id (nth 0 row))
-                     (date (nth 1 row))
-                     (raw-content (nth 2 row))
-                     (url (nth 3 row))
-                     (title (nth 4 row))
-                     (categories (nth 5 row))
-                     (date-display (if (> (length date) 10) (substring date 0 10) date))
-                     (summary (microblog-strip-html raw-content)))
-                (when (or (null title) (string-empty-p title)) (setq title "-"))
-                (when (> (length summary) 60) (setq summary (concat (substring summary 0 57) "...")))
-                (list id (vector date-display title (or categories "") summary))))
-            rows)))
-
-(defun microblog-save-draft ()
-  "Save the current buffer as a draft to Micro.blog."
-  (interactive)
-  (microblog-submit-update t))
-
-(defun microblog-drafts ()
-  "Open the Micro.blog Drafts view."
-  (interactive)
-  (microblog-init-db)
-  (let ((buf (get-buffer-create "*Micro.blog Drafts*")))
-    (with-current-buffer buf
-      (microblog-headers-mode)
-      (setq tabulated-list-entries (microblog-get-draft-entries))
-      (tabulated-list-print t))
-    (switch-to-buffer buf)))
 
 (defun microblog-copy-url ()
   "Copy the live URL of the current post to the clipboard."
@@ -629,7 +548,6 @@ If AS-DRAFT is non-nil, the post is sent to Micro.blog as a draft."
 (define-key microblog-headers-mode-map (kbd "s") 'microblog-search)
 (define-key microblog-headers-mode-map (kbd "g") 'microblog-list)
 (define-key microblog-headers-mode-map (kbd "o") 'microblog-open-in-browser)
-(define-key microblog-headers-mode-map (kbd "d") 'microblog-drafts)
 
 ;; =====================================================================
 ;; Main Entry Point

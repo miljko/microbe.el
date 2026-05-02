@@ -8,6 +8,13 @@ Inspired by native desktop blogging apps, `microbe.el` stores your entire post h
 
 **Many thanks to Manton Reece** for creating and stewarding [Micro.blog](https://micro.blog), and especially for making the API. Thanks also to **Daniel Jalkut** for creating [MarsEdit](https://redsweater.com/marsedit/) which is the main insipiration for microbe.el and still my preferred Micro.blog manager on MacOS.
 
+## What's New
+
+**New Drafts Functionality**
+* **Save as Draft:** You can now save your posts as drafts (`C-c C-z`) to the Micro.blog server directly from the composer.
+* **Dedicated Drafts View:** Access a filtered view of all your unpublished drafts by pressing `d` from the main list. 
+* **Smart Syncing:** Drafts are saved securely to your local SQLite database. If you publish a draft later via the Micro.blog web interface, your next local sync will automatically clear the draft status in Emacs.
+
 ## Dependencies
 
 * **Emacs 29.1+** (Requires built-in SQLite support).
@@ -23,10 +30,10 @@ Inspired by native desktop blogging apps, `microbe.el` stores your entire post h
 ```elisp
 (add-to-list 'load-path "~/.emacs.d/lisp/")
 (require 'microbe)
-```
 
 ;; Map a global shortcut to open the client
 (global-set-key (kbd "C-c m") 'microblog-list)
+```
 
 ## Authentication (Required)
 
@@ -43,7 +50,7 @@ machine micro.blog login apikey password YOUR_APP_TOKEN_HERE
 
 ## Proofreading setup (Optional)
 
-To use this feature, you must obtain a free Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey) and add it to  your `init.el`:
+To use this feature, you must obtain a free Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey) and add it to your `init.el`:
 `(setq microblog-gemini-api-key "YOUR_API_KEY_HERE")`
 
 ## Usage
@@ -57,8 +64,9 @@ If your list is empty, run `M-x microblog-sync-posts` to download your timeline 
 When you are in the `*Micro.blog Headers*` buffer, use the following keys:
 
 * `c` - **Compose** a new post.
-* `o` - **Open** the currently highlighted post in your system's default web browser.
 * `e` - **Edit** the currently highlighted post.
+* `d` - **Drafts**. Open a separate view containing only your saved, unpublished drafts.
+* `o` - **Open** the currently highlighted post in your system's default web browser.
 * `w` - **Copy URL** of the currently highlighted post to your system clipboard.
 * `s` - **Search** the full text of all posts, titles, and tags.
 * `g` - **Refresh** the view (and clear any active search filters).
@@ -67,7 +75,8 @@ When you are in the `*Micro.blog Headers*` buffer, use the following keys:
 
 When writing or editing a post, Emacs will present an email-style buffer with `Title:` and `Categories:` headers. It automatically enables word-wrapping (`visual-line-mode`) for a comfortable writing experience.
 
-* `C-c C-c` - **Publish / Save**. Parses your buffer and sends it to Micro.blog.
+* `C-c C-c` - **Publish / Save**. Parses your buffer and publishes it instantly to Micro.blog.
+* `C-c C-z` - **Save Draft**. Saves the current buffer as an unpublished draft, syncing it to both your local database and the Micro.blog server.
 * `C-c C-t` - **Tags / Categories**. Opens an auto-complete prompt at the bottom of the screen containing all tags you've previously used in your database. You can select multiple tags separated by commas.
 * `C-c C-p` - **Proofread**. Mark up errors in spelling, typography, and Hugo/Markdown syntax using Google's Gemini 2.5 Flash API. Requires API token setup (see above).
 * `C-c C-a` - **Attach Image**. Prompts you to select a local image file and provide Alt Text. Uploads the image to Micro.blog in the background and inserts the Markdown `![alt](url)` link directly at your cursor.
