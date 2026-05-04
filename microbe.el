@@ -1,7 +1,7 @@
 ;;; microbe.el --- A local SQLite-backed Micro.blog client -*- lexical-binding: t; -*-
 
 ;; Author: Milos Miljkovic
-;; Version: 2.0.0
+;; Version: 2.0.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: comm, hypermedia
 ;; URL: https://github.com/miljko/microbe.el
@@ -120,7 +120,11 @@ Get one for free at: https://aistudio.google.com/app/apikey")
                        (content (car (alist-get 'content props)))
                        (date (car (alist-get 'published props)))
                        (url (car (alist-get 'url props)))
-                       (id (or (car (alist-get 'uid props)) url))
+                       
+                       ;; BUG FIX: Prioritize URL as the primary key instead of the UID 
+                       ;; so it flawlessly matches the local Draft ID.
+                       (id (or url (car (alist-get 'uid props))))
+                       
                        (title (car (alist-get 'name props)))
                        (cats-list (alist-get 'category props))
                        (categories (if cats-list (mapconcat #'identity cats-list ", ") "")))
@@ -128,7 +132,7 @@ Get one for free at: https://aistudio.google.com/app/apikey")
                   (when (listp content) (setq content (alist-get 'html content)))
                   
                   (sqlite-execute db "INSERT OR REPLACE INTO posts (id, date_published, content_html, url, title, categories, is_draft) VALUES (?, ?, ?, ?, ?, ?, 0)"
-                (list id date content url title categories))
+                                  (list id date content url title categories))
                   (setq total-count (1+ total-count))))
               
               (setq offset (+ offset limit))))
